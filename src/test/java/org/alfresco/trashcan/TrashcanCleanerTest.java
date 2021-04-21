@@ -24,27 +24,24 @@
  */
 package org.alfresco.trashcan;
 
-import java.io.Serializable;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
-import javax.transaction.UserTransaction;
-
 import junit.framework.TestCase;
-
 import org.alfresco.model.ContentModel;
 import org.alfresco.repo.model.Repository;
 import org.alfresco.repo.security.authentication.AuthenticationComponent;
+import org.alfresco.repo.security.authentication.AuthenticationUtil;
+import org.alfresco.repo.transaction.RetryingTransactionHelper;
 import org.alfresco.service.cmr.repository.ChildAssociationRef;
 import org.alfresco.service.cmr.repository.NodeRef;
 import org.alfresco.service.cmr.repository.NodeService;
-import org.alfresco.service.cmr.repository.StoreRef;
 import org.alfresco.service.namespace.NamespaceService;
 import org.alfresco.service.namespace.QName;
 import org.alfresco.service.transaction.TransactionService;
 import org.alfresco.util.ApplicationContextHelper;
 import org.springframework.context.ApplicationContext;
+
+import java.io.Serializable;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * 
@@ -134,37 +131,20 @@ public class TrashcanCleanerTest extends TestCase
 	 * @throws Throwable
 	 */
 	private void cleanBatchTest(int nodesCreate, int nodesRemain)
-	        throws Throwable
 	{
-		UserTransaction userTransaction1 = transactionService
-		        .getUserTransaction();
-		try
-		{
-			userTransaction1.begin();
-			TrashcanCleaner cleaner = new TrashcanCleaner(nodeService,
-			        BATCH_SIZE, -1);
-			createAndDeleteNodes(nodesCreate);
-			long nodesToDelete = cleaner.getNumberOfNodesInTrashcan();
-			System.out.println(String.format("Existing nodes to delete: %s",
-			        nodesToDelete));
-			cleaner.clean();
-			nodesToDelete = cleaner.getNumberOfNodesInTrashcan();
-			System.out.println(String.format(
-			        "Existing nodes to delete after: %s", nodesToDelete));
-			assertEquals(nodesRemain,nodesToDelete);
-			System.out.println("Clean trashcan...");
-			cleaner.clean();
-			userTransaction1.commit();
-		} catch (Throwable e)
-		{
-			try
-			{
-				userTransaction1.rollback();
-			} catch (IllegalStateException ee)
-			{
-			}
-			throw e;
-		}
+		TrashcanCleaner cleaner = new TrashcanCleaner(nodeService, transactionService, BATCH_SIZE, -1);
+		long alreadyInTrashcan = cleaner.getNumberOfNodesInTrashcan();
+		createAndDeleteNodes(nodesCreate);
+		long nodesToDelete = cleaner.getNumberOfNodesInTrashcan();
+		System.out.println(String.format("Existing nodes to delete: %s",
+				nodesToDelete));
+		cleaner.clean();
+		nodesToDelete = cleaner.getNumberOfNodesInTrashcan();
+		System.out.println(String.format(
+				"Existing nodes to delete after: %s", nodesToDelete));
+		assertEquals(nodesRemain,nodesToDelete);
+		System.out.println("Clean trashcan...");
+		cleaner.clean();
 	}
 
 	/**
@@ -173,12 +153,23 @@ public class TrashcanCleanerTest extends TestCase
 	 * 
 	 * @param n
 	 */
-	private void createAndDeleteNodes(int n)
+	private void createAndDeleteNodes(final int n)
 	{
-		for (int i = n; i > 0; i--)
-		{
-			createAndDeleteNode();
-		}
+		AuthenticationUtil.runAsSystem(new AuthenticationUtil.RunAsWork<Void>() {
+			@Override
+			public Void doWork() throws Exception {
+				RetryingTransactionHelper.RetryingTransactionCallback<Void> txnWork = new RetryingTransactionHelper.RetryingTransactionCallback<Void>() {
+					@Override
+					public Void execute() throws Throwable {
+						for (int i = n; i > 0; i--) {
+							createAndDeleteNode();
+						}
+						return null;
+					}
+				};
+				return transactionService.getRetryingTransactionHelper().doInTransaction(txnWork);
+			}
+		});
 
 	}
 
